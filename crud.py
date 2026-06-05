@@ -1,12 +1,33 @@
+from fastapi import HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select, Sequence
 from sqlalchemy.orm import Session
+
 
 import models
 import schemas
 
 
-def get_all_authors(db: Session) -> Sequence[models.DBAuthor]:
-    return db.scalars(select(models.DBAuthor)).all()
+def update_function(
+        obj,
+        data: BaseModel,
+        exclude: set,
+        exclude_unset: bool = False
+):
+    for field, value in data.model_dump(
+            exclude_unset=exclude_unset, exclude=exclude
+    ).items():
+        setattr(obj, field, value)
+
+    return obj
+
+
+def get_all_authors(
+        db: Session,
+        skip: int = 0,
+        limit: int = 10
+) -> Sequence[models.DBAuthor]:
+    return db.scalars(select(models.DBAuthor).offset(skip).limit(limit)).all()
 
 
 def get_author_by_id(
@@ -22,21 +43,33 @@ def create_author(
         db: Session,
         author_info: schemas.AuthorCreate
 ):
+    db_books = author_info.books
+    author_info = author_info.model_dump(exclude={"books"})
+
+    try:
+        if db.scalar(select(models.DBAuthor).where(
+                models.DBAuthor.name == author_info.get("name"))
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Author with this name already exists"
+            )
+    except HTTPException as e:
+        print(e)
+
     db_author = models.DBAuthor(
-        name=author_info.name,
-        bio=author_info.bio,
+        **author_info
     )
     db.add(db_author)
     db.flush()
 
-    for book in author_info.books:
-        db_book = models.DBBook(
-            name=book.name,
-            summary=book.summary,
-            publication_date=book.publication_date,
-            author_id=db_author.id,
-        )
-        db.add(db_book)
+    if db_books:
+        for book in db_books:
+            db_book = models.DBBook(
+                **book.model_dump(),
+                author_id=db_author.id,
+            )
+            db.add(db_book)
 
     db.add(db_author)
     db.commit()
@@ -55,15 +88,21 @@ def update_author(
     if not author:
         raise ValueError("There is no such author")
 
-    author.name = author_update_info.name
-    author.bio = author_update_info.bio
-    updated_books = []
-    for book in author_update_info.books:
-        db_book = db.get(models.DBBook, book.id)
-        if db_book:
-            updated_books.append(db_book)
+    books = author_update_info.books
+    author_update_info = author_update_info.model_dump(
+        exclude_unset=True, exclude={"books"}
+    )
+    for field, value in author_update_info.items():
+        setattr(author, field, value)
 
-    author.books = updated_books
+    db.flush()
+    author.books = []
+
+    if books:
+        for book in books:
+            db_book = db.get(models.DBBook, book.id)
+            if db_book:
+                author.books.append(db_book)
 
     db.commit()
     db.refresh(author)
@@ -77,14 +116,11 @@ def partial_update_author(
         author_update_info: schemas.AuthorPartialUpdate
 ):
     author = db.get(models.DBAuthor, author_id_to_update)
+    author = update_function(
+        author, author_update_info, exclude={"books"}, exclude_unset=True
+    )
 
-    if author_update_info.name:
-        author.name = author_update_info.name
-
-    if author_update_info.bio:
-        author.bio = author_update_info.bio
-
-    if author.books:
+    if author_update_info.books:
         for book in author_update_info.books:
             db_book = db.get(models.DBBook, book.id)
             if db_book:
@@ -109,9 +145,17 @@ def delete_author(
 
 
 def get_all_books(
-        db: Session
+        db: Session,
+        author_id: int | None,
+        skip: int = 0,
+        limit: int = 10,
 ):
-    return db.scalars(select(models.DBBook)).all()
+    queryset = select(models.DBBook).offset(skip).limit(limit)
+    if author_id is not None:
+        queryset = queryset.where(
+            models.DBBook.author_id == author_id
+        ).distinct()
+    return db.scalars(queryset).all()
 
 
 def get_book_by_id(
@@ -126,10 +170,7 @@ def create_book(
         book_info: schemas.BookCreate
 ):
     db_book = models.DBBook(
-        name=book_info.name,
-        summary=book_info.summary,
-        publication_date=book_info.publication_date,
-        author_id=book_info.author_id
+        **book_info.model_dump()
     )
 
     db.add(db_book)
@@ -145,11 +186,7 @@ def update_book(
         book_update_info: schemas.BookUpdate
 ):
     db_book = db.get(models.DBBook, book_id)
-
-    db_book.name = book_update_info.name
-    db_book.summary = book_update_info.summary
-    db_book.publication_date = book_update_info.publication_date
-    db_book.author_id = book_update_info.author_id
+    db_book = update_function(db_book, book_update_info, exclude_unset=True)
 
     db.commit()
     db.refresh(db_book)
@@ -163,10 +200,7 @@ def partial_update_book(
         book_update_info: schemas.BookPartialUpdate
 ):
     db_book = db.get(models.DBBook, book_id)
-    book_update_info = book_update_info.model_dump(exclude_unset=True)
-
-    for field, value in book_update_info.items():
-        setattr(db_book, field, value)
+    db_book = update_function(db_book, book_update_info, exclude_unset=True)
 
     db.commit()
     db.refresh(db_book)

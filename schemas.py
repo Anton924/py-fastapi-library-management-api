@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict
 
 
 class BookBase(BaseModel):
-    name: str
+    title: str
     summary: str
     publication_date: datetime
 
@@ -28,7 +28,7 @@ class BookUpdate(BookBase):
 
 
 class BookPartialUpdate(BaseModel):
-    name: str | None = None
+    title: str | None = None
     summary: str | None = None
     publication_date: datetime | None = None
     author_id: int | None = None
@@ -44,7 +44,7 @@ class AuthorBase(BaseModel):
 
 
 class AuthorCreate(AuthorBase):
-    books: list[BookCreateInAuthor]
+    books: list[BookCreateInAuthor] | None = None
 
 
 class Author(AuthorBase):
@@ -55,7 +55,7 @@ class Author(AuthorBase):
 
 
 class AuthorUpdate(AuthorCreate):
-    books: list[BookReference]
+    books: list[BookReference] | None = None
 
 
 class AuthorPartialUpdate(BaseModel):
